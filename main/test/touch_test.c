@@ -1,3 +1,8 @@
+/**
+ * @file touch_test.c
+ * @brief 初始化 FT6336U 触摸控制器，并将其注册为 LVGL 输入设备。
+ */
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
@@ -63,7 +68,7 @@ esp_err_t touch_test_init(lv_display_t *display)
     const esp_lcd_touch_config_t touch_config = {
         .x_max = TOUCH_TEST_H_RES,
         .y_max = TOUCH_TEST_V_RES,
-        /* Reset is performed above with the 500 ms delay required by the module vendor. */
+        /* 已按厂商要求完成 500 ms 复位等待，禁止组件再次执行短复位。 */
         .rst_gpio_num = GPIO_NUM_NC,
         .int_gpio_num = GPIO_NUM_NC,
         .levels = {

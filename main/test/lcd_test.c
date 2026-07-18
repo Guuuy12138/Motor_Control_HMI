@@ -1,3 +1,8 @@
+/**
+ * @file lcd_test.c
+ * @brief ST7796 底层显示验证，循环显示纯色和四象限色块。
+ */
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -36,8 +41,8 @@
 static const char *TAG = "LCD_TEST";
 
 /*
- * MSP3526 module-specific ST7796S initialization commands. MADCTL and COLMOD
- * are intentionally omitted because esp_lcd_st7796 sets them from panel_config.
+ * MSP3526 模块专用的 ST7796S 初始化命令。
+ * MADCTL 和 COLMOD 由 esp_lcd_st7796 根据 panel_config 自动设置，因此此处不重复配置。
  */
 static const st7796_lcd_init_cmd_t s_msp3526_init_cmds[] = {
     {0xF0, (uint8_t[]){0xC3}, 1, 0},

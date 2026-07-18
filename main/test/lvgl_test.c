@@ -1,3 +1,8 @@
+/**
+ * @file lvgl_test.c
+ * @brief 初始化 ST7796、LVGL 和触摸输入，并显示综合交互验证页面。
+ */
+
 #include <stdint.h>
 
 #include "freertos/FreeRTOS.h"
@@ -47,7 +52,7 @@ static lv_obj_t *s_touch_position_label;
 static lv_obj_t *s_touch_count_label;
 static uint32_t s_touch_count;
 
-/* MSP3526 module-specific ST7796S initialization commands. */
+/* MSP3526 模块专用的 ST7796S 初始化命令。 */
 static const st7796_lcd_init_cmd_t s_msp3526_init_cmds[] = {
     {0xF0, (uint8_t[]){0xC3}, 1, 0},
     {0xF0, (uint8_t[]){0x96}, 1, 0},
