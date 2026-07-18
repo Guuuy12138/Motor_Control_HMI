@@ -27,6 +27,9 @@
 #define TOUCH_TEST_RESET_HIGH_MS 20
 #define TOUCH_TEST_RESET_LOW_MS  20
 #define TOUCH_TEST_BOOT_WAIT_MS  500
+#define TOUCH_TEST_I2C_ADDRESS    0x38
+#define TOUCH_TEST_PROBE_TIMEOUT_MS 100
+#define TOUCH_TEST_PROBE_RETRIES  3
 
 static const char *TAG = "TOUCH_TEST";
 
@@ -40,21 +43,83 @@ static esp_err_t touch_test_reset_with_vendor_timing(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
 
-    ESP_RETURN_ON_ERROR(gpio_config(&reset_gpio_config), TAG, "Touch reset GPIO configuration failed");
-    ESP_RETURN_ON_ERROR(gpio_set_level(TOUCH_TEST_GPIO_RST, 1), TAG, "Touch reset GPIO set high failed");
+    ESP_RETURN_ON_ERROR(gpio_config(&reset_gpio_config), TAG, "触摸复位 GPIO 配置失败");
+    ESP_RETURN_ON_ERROR(gpio_set_level(TOUCH_TEST_GPIO_RST, 1), TAG, "触摸复位 GPIO 输出高电平失败");
     vTaskDelay(pdMS_TO_TICKS(TOUCH_TEST_RESET_HIGH_MS));
-    ESP_RETURN_ON_ERROR(gpio_set_level(TOUCH_TEST_GPIO_RST, 0), TAG, "Touch reset GPIO set low failed");
+    ESP_RETURN_ON_ERROR(gpio_set_level(TOUCH_TEST_GPIO_RST, 0), TAG, "触摸复位 GPIO 输出低电平失败");
     vTaskDelay(pdMS_TO_TICKS(TOUCH_TEST_RESET_LOW_MS));
-    ESP_RETURN_ON_ERROR(gpio_set_level(TOUCH_TEST_GPIO_RST, 1), TAG, "Touch reset GPIO release failed");
+    ESP_RETURN_ON_ERROR(gpio_set_level(TOUCH_TEST_GPIO_RST, 1), TAG, "触摸复位 GPIO 释放失败");
     vTaskDelay(pdMS_TO_TICKS(TOUCH_TEST_BOOT_WAIT_MS));
 
-    ESP_LOGI(TAG, "FT6336U reset complete: HIGH %d ms, LOW %d ms, boot wait %d ms",
+    ESP_LOGI(TAG, "FT6336U 复位完成：高电平 %d ms，低电平 %d ms，启动等待 %d ms",
              TOUCH_TEST_RESET_HIGH_MS, TOUCH_TEST_RESET_LOW_MS, TOUCH_TEST_BOOT_WAIT_MS);
     return ESP_OK;
 }
 
+static esp_err_t touch_test_probe_device(i2c_master_bus_handle_t i2c_bus)
+{
+    esp_err_t result = ESP_FAIL;
+
+    for (int attempt = 1; attempt <= TOUCH_TEST_PROBE_RETRIES; attempt++) {
+        ESP_LOGI(TAG, "正在探测 I2C 地址 0x%02X（第 %d/%d 次）",
+                 TOUCH_TEST_I2C_ADDRESS, attempt, TOUCH_TEST_PROBE_RETRIES);
+        result = i2c_master_probe(i2c_bus, TOUCH_TEST_I2C_ADDRESS, TOUCH_TEST_PROBE_TIMEOUT_MS);
+        if (result == ESP_OK) {
+            ESP_LOGI(TAG, "I2C 地址 0x%02X 探测成功", TOUCH_TEST_I2C_ADDRESS);
+            return ESP_OK;
+        }
+
+        ESP_LOGW(TAG, "I2C 地址 0x%02X 探测失败：%s",
+                 TOUCH_TEST_I2C_ADDRESS, esp_err_to_name(result));
+        if (attempt == TOUCH_TEST_PROBE_RETRIES) {
+            break;
+        }
+
+        result = i2c_master_bus_reset(i2c_bus);
+        if (result != ESP_OK) {
+            ESP_LOGE(TAG, "I2C 总线恢复失败：%s", esp_err_to_name(result));
+            return result;
+        }
+        ESP_LOGI(TAG, "I2C 总线恢复完成，重新复位 FT6336U");
+
+        result = touch_test_reset_with_vendor_timing();
+        if (result != ESP_OK) {
+            return result;
+        }
+    }
+
+    return result;
+}
+
+static void touch_test_cleanup(i2c_master_bus_handle_t i2c_bus,
+                               esp_lcd_panel_io_handle_t touch_io,
+                               esp_lcd_touch_handle_t touch_handle)
+{
+    esp_err_t result;
+
+    if (touch_handle != NULL) {
+        result = esp_lcd_touch_del(touch_handle);
+        if (result != ESP_OK) {
+            ESP_LOGW(TAG, "释放触摸驱动失败：%s", esp_err_to_name(result));
+        }
+    }
+    if (touch_io != NULL) {
+        result = esp_lcd_panel_io_del(touch_io);
+        if (result != ESP_OK) {
+            ESP_LOGW(TAG, "释放触摸 I2C 通信对象失败：%s", esp_err_to_name(result));
+        }
+    }
+    if (i2c_bus != NULL) {
+        result = i2c_del_master_bus(i2c_bus);
+        if (result != ESP_OK) {
+            ESP_LOGW(TAG, "释放 I2C 总线失败：%s", esp_err_to_name(result));
+        }
+    }
+}
+
 esp_err_t touch_test_init(lv_display_t *display)
 {
+    esp_err_t result;
     i2c_master_bus_handle_t i2c_bus = NULL;
     esp_lcd_panel_io_handle_t touch_io = NULL;
     esp_lcd_touch_handle_t touch_handle = NULL;
@@ -64,6 +129,9 @@ esp_err_t touch_test_init(lv_display_t *display)
         .scl_io_num = TOUCH_TEST_GPIO_SCL,
         .clk_source = I2C_CLK_SRC_DEFAULT,
         .glitch_ignore_cnt = 7,
+        .flags = {
+            .enable_internal_pullup = true,
+        },
     };
     const esp_lcd_touch_config_t touch_config = {
         .x_max = TOUCH_TEST_H_RES,
@@ -82,27 +150,60 @@ esp_err_t touch_test_init(lv_display_t *display)
         },
     };
 
-    ESP_RETURN_ON_FALSE(display != NULL, ESP_ERR_INVALID_ARG, TAG, "LVGL display is NULL");
+    ESP_RETURN_ON_FALSE(display != NULL, ESP_ERR_INVALID_ARG, TAG, "LVGL 显示器句柄为空");
 
-    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&i2c_config, &i2c_bus), TAG, "I2C bus initialization failed");
-    ESP_LOGI(TAG, "I2C bus initialized: SCL=%d SDA=%d, %d kHz",
+    result = i2c_new_master_bus(&i2c_config, &i2c_bus);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "I2C 总线初始化失败：%s", esp_err_to_name(result));
+        return result;
+    }
+    ESP_LOGI(TAG, "I2C 总线初始化完成：SCL=%d SDA=%d，%d kHz，内部上拉已启用",
              TOUCH_TEST_GPIO_SCL, TOUCH_TEST_GPIO_SDA, TOUCH_TEST_I2C_CLOCK_HZ / 1000);
 
-    ESP_RETURN_ON_ERROR(touch_test_reset_with_vendor_timing(), TAG, "FT6336U hardware reset failed");
+    result = touch_test_reset_with_vendor_timing();
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "FT6336U 硬件复位失败：%s", esp_err_to_name(result));
+        goto cleanup;
+    }
+
+    result = touch_test_probe_device(i2c_bus);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "FT6336U 地址探测最终失败：%s", esp_err_to_name(result));
+        goto cleanup;
+    }
 
     esp_lcd_panel_io_i2c_config_t touch_io_config = ESP_LCD_TOUCH_IO_I2C_FT6x36_CONFIG();
     touch_io_config.scl_speed_hz = TOUCH_TEST_I2C_CLOCK_HZ;
-    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_i2c(i2c_bus, &touch_io_config, &touch_io), TAG,
-                        "Touch I2C IO initialization failed");
-    ESP_RETURN_ON_ERROR(esp_lcd_touch_new_i2c_ft6x36(touch_io, &touch_config, &touch_handle), TAG,
-                        "FT6336U initialization failed");
-    ESP_LOGI(TAG, "FT6336U initialized at I2C address 0x38");
+    ESP_LOGI(TAG, "正在创建触摸 I2C 通信对象");
+    result = esp_lcd_new_panel_io_i2c(i2c_bus, &touch_io_config, &touch_io);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "触摸 I2C 通信对象创建失败：%s", esp_err_to_name(result));
+        goto cleanup;
+    }
+    ESP_LOGI(TAG, "触摸 I2C 通信对象创建完成");
 
-    ESP_RETURN_ON_FALSE(lvgl_port_add_touch(&(lvgl_port_touch_cfg_t) {
+    ESP_LOGI(TAG, "正在初始化 FT6336U 驱动并读取芯片信息");
+    result = esp_lcd_touch_new_i2c_ft6x36(touch_io, &touch_config, &touch_handle);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "FT6336U 驱动初始化失败：%s", esp_err_to_name(result));
+        goto cleanup;
+    }
+    ESP_LOGI(TAG, "FT6336U 初始化完成，I2C 地址为 0x%02X", TOUCH_TEST_I2C_ADDRESS);
+
+    ESP_LOGI(TAG, "正在注册 LVGL 触摸输入设备");
+    if (lvgl_port_add_touch(&(lvgl_port_touch_cfg_t) {
         .disp = display,
         .handle = touch_handle,
-    }) != NULL, ESP_ERR_NO_MEM, TAG, "LVGL touch input registration failed");
-    ESP_LOGI(TAG, "LVGL touch input registered (polling mode)");
+    }) == NULL) {
+        result = ESP_ERR_NO_MEM;
+        ESP_LOGE(TAG, "LVGL 触摸输入设备注册失败：内存不足");
+        goto cleanup;
+    }
+    ESP_LOGI(TAG, "LVGL 触摸输入设备注册完成，当前使用轮询模式");
 
     return ESP_OK;
+
+cleanup:
+    touch_test_cleanup(i2c_bus, touch_io, touch_handle);
+    return result;
 }

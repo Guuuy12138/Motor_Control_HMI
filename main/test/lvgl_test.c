@@ -34,7 +34,12 @@
 
 static const char *TAG = "LVGL_TEST";
 static lv_display_t *s_display;
-static esp_err_t s_touch_init_result = ESP_FAIL;
+
+typedef enum {
+    TOUCH_STATE_INIT,
+    TOUCH_STATE_READY,
+    TOUCH_STATE_FAILED,
+} touch_state_t;
 
 typedef struct {
     const char *name;
@@ -50,6 +55,7 @@ static const touch_region_t s_touch_regions[] = {
 static lv_obj_t *s_touch_name_label;
 static lv_obj_t *s_touch_position_label;
 static lv_obj_t *s_touch_count_label;
+static lv_obj_t *s_touch_status_card;
 static uint32_t s_touch_count;
 
 /* MSP3526 模块专用的 ST7796S 初始化命令。 */
@@ -86,21 +92,57 @@ static void lvgl_add_color_block(lv_obj_t *parent, int32_t x, lv_color_t color)
     lv_obj_clear_flag(block, LV_OBJ_FLAG_SCROLLABLE);
 }
 
+static void lvgl_update_touch_state(touch_state_t state)
+{
+    switch (state) {
+    case TOUCH_STATE_READY:
+        lv_obj_set_style_bg_color(s_touch_status_card, lv_color_hex(0x123A2B), 0);
+        lv_obj_set_style_border_color(s_touch_status_card, lv_color_hex(0x39D98A), 0);
+        lv_label_set_text(s_touch_name_label, "Touch: READY");
+        lv_obj_set_style_text_color(s_touch_name_label, lv_color_hex(0x70F2A6), 0);
+        lv_label_set_text(s_touch_position_label, "X: ---  Y: ---");
+        lv_label_set_text(s_touch_count_label, "Count: 0");
+        break;
+
+    case TOUCH_STATE_FAILED:
+        lv_obj_set_style_bg_color(s_touch_status_card, lv_color_hex(0x4A1F24), 0);
+        lv_obj_set_style_border_color(s_touch_status_card, lv_color_hex(0xFF657A), 0);
+        lv_label_set_text(s_touch_name_label, "Touch: FAILED");
+        lv_obj_set_style_text_color(s_touch_name_label, lv_color_hex(0xFF8A9A), 0);
+        lv_label_set_text(s_touch_position_label, "See serial log");
+        lv_label_set_text(s_touch_count_label, "Display remains active");
+        break;
+
+    case TOUCH_STATE_INIT:
+    default:
+        lv_obj_set_style_bg_color(s_touch_status_card, lv_color_hex(0x42351E), 0);
+        lv_obj_set_style_border_color(s_touch_status_card, lv_color_hex(0xF5B942), 0);
+        lv_label_set_text(s_touch_name_label, "Touch: INIT");
+        lv_obj_set_style_text_color(s_touch_name_label, lv_color_hex(0xFFD166), 0);
+        lv_label_set_text(s_touch_position_label, "Waiting for FT6336U");
+        lv_label_set_text(s_touch_count_label, "Count: 0");
+        break;
+    }
+}
+
 static void lvgl_touch_button_event_cb(lv_event_t *event)
 {
     const touch_region_t *region = lv_event_get_user_data(event);
     lv_indev_t *indev = lv_indev_get_act();
     lv_point_t point = {0};
+    int32_t displayed_y;
 
     if (indev != NULL) {
         lv_indev_get_point(indev, &point);
     }
 
+    /* LVGL 内部坐标向下增大；界面显示的 Y 坐标按向上增大转换。 */
+    displayed_y = LVGL_TEST_V_RES - 1 - point.y;
     s_touch_count++;
     lv_label_set_text_fmt(s_touch_name_label, "Touch: %s", region->name);
-    lv_label_set_text_fmt(s_touch_position_label, "X: %ld  Y: %ld", (long)point.x, (long)point.y);
+    lv_label_set_text_fmt(s_touch_position_label, "X: %ld  Y: %ld", (long)point.x, (long)displayed_y);
     lv_label_set_text_fmt(s_touch_count_label, "Count: %lu", (unsigned long)s_touch_count);
-    ESP_LOGI(TAG, "Touch %s: X=%ld Y=%ld Count=%lu", region->name, (long)point.x, (long)point.y,
+    ESP_LOGI(TAG, "触摸区域 %s：X=%ld Y=%ld，累计次数=%lu", region->name, (long)point.x, (long)displayed_y,
              (unsigned long)s_touch_count);
 }
 
@@ -139,8 +181,6 @@ static void lvgl_create_test_screen(void)
     lv_obj_t *screen = lv_screen_active();
     lv_obj_t *title;
     lv_obj_t *info;
-    lv_obj_t *status_card;
-    lv_obj_t *status_label;
     lv_obj_t *uptime_label;
 
     lv_obj_set_style_bg_color(screen, lv_color_hex(0x101820), 0);
@@ -163,36 +203,29 @@ static void lvgl_create_test_screen(void)
     lv_obj_set_style_text_align(info, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(info, LV_ALIGN_TOP_MID, 0, 102);
 
-    status_card = lv_obj_create(screen);
-    lv_obj_set_size(status_card, 280, 84);
-    lv_obj_set_pos(status_card, 20, 346);
-    lv_obj_set_style_bg_color(status_card,
-                              s_touch_init_result == ESP_OK ? lv_color_hex(0x123A2B) : lv_color_hex(0x4A1F24), 0);
-    lv_obj_set_style_bg_opa(status_card, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(status_card,
-                                  s_touch_init_result == ESP_OK ? lv_color_hex(0x39D98A) : lv_color_hex(0xFF657A), 0);
-    lv_obj_set_style_border_width(status_card, 2, 0);
-    lv_obj_set_style_radius(status_card, 12, 0);
-    lv_obj_clear_flag(status_card, LV_OBJ_FLAG_SCROLLABLE);
+    s_touch_status_card = lv_obj_create(screen);
+    lv_obj_set_size(s_touch_status_card, 280, 84);
+    lv_obj_set_pos(s_touch_status_card, 20, 346);
+    lv_obj_set_style_bg_opa(s_touch_status_card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_touch_status_card, 2, 0);
+    lv_obj_set_style_radius(s_touch_status_card, 12, 0);
+    lv_obj_set_flex_flow(s_touch_status_card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_touch_status_card,
+                          LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(s_touch_status_card, 4, 0);
+    lv_obj_clear_flag(s_touch_status_card, LV_OBJ_FLAG_SCROLLABLE);
 
-    status_label = lv_label_create(status_card);
-    lv_label_set_text(status_label, s_touch_init_result == ESP_OK ? "Touch: --" : "TOUCH INIT FAILED");
-    lv_obj_set_style_text_color(status_label,
-                                s_touch_init_result == ESP_OK ? lv_color_hex(0x70F2A6) : lv_color_hex(0xFF8A9A), 0);
-    lv_obj_set_pos(status_label, 12, 8);
-    s_touch_name_label = status_label;
+    s_touch_name_label = lv_label_create(s_touch_status_card);
 
-    s_touch_position_label = lv_label_create(status_card);
-    lv_label_set_text(s_touch_position_label,
-                      s_touch_init_result == ESP_OK ? "X: ---  Y: ---" : "See serial log");
+    s_touch_position_label = lv_label_create(s_touch_status_card);
     lv_obj_set_style_text_color(s_touch_position_label, lv_color_hex(0xB8C7D9), 0);
-    lv_obj_set_pos(s_touch_position_label, 12, 30);
 
-    s_touch_count_label = lv_label_create(status_card);
-    lv_label_set_text(s_touch_count_label,
-                      s_touch_init_result == ESP_OK ? "Count: 0" : "Display remains active");
+    s_touch_count_label = lv_label_create(s_touch_status_card);
     lv_obj_set_style_text_color(s_touch_count_label, lv_color_hex(0xB8C7D9), 0);
-    lv_obj_set_pos(s_touch_count_label, 12, 52);
+
+    lvgl_update_touch_state(TOUCH_STATE_INIT);
 
     lvgl_add_touch_button(screen, 20, 150, &s_touch_regions[0]);
     lvgl_add_touch_button(screen, 175, 150, &s_touch_regions[1]);
@@ -236,7 +269,7 @@ static void lvgl_init_lcd(void)
         .vendor_config = &vendor_config,
     };
 
-    ESP_LOGI(TAG, "SPI pins: CS=%d RST=%d DC=%d MOSI=%d SCLK=%d",
+    ESP_LOGI(TAG, "SPI 引脚：CS=%d RST=%d DC=%d MOSI=%d SCLK=%d",
              LVGL_TEST_GPIO_CS, LVGL_TEST_GPIO_RST, LVGL_TEST_GPIO_DC,
              LVGL_TEST_GPIO_MOSI, LVGL_TEST_GPIO_SCLK);
     ESP_ERROR_CHECK(spi_bus_initialize(LVGL_TEST_SPI_HOST, &bus_config, SPI_DMA_CH_AUTO));
@@ -246,12 +279,13 @@ static void lvgl_init_lcd(void)
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel_handle, true));
 
-    ESP_LOGI(TAG, "ST7796 initialized: %dx%d, SPI %d MHz",
+    ESP_LOGI(TAG, "ST7796 初始化完成：%dx%d，SPI %d MHz",
              LVGL_TEST_H_RES, LVGL_TEST_V_RES, LVGL_TEST_SPI_CLOCK_HZ / 1000000);
 }
 
 static void lvgl_init_port(void)
 {
+    esp_err_t touch_result;
     const lvgl_port_cfg_t lvgl_config = ESP_LVGL_PORT_INIT_CONFIG();
     const lvgl_port_display_cfg_t display_config = {
         .io_handle = s_io_handle,
@@ -274,22 +308,28 @@ static void lvgl_init_port(void)
     };
 
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_config));
-    ESP_LOGI(TAG, "LVGL port initialized");
+    ESP_LOGI(TAG, "LVGL 端口初始化完成");
 
     s_display = lvgl_port_add_disp(&display_config);
     ESP_ERROR_CHECK(s_display == NULL ? ESP_FAIL : ESP_OK);
-    ESP_LOGI(TAG, "LVGL display registered: RGB565, 320x40 DMA buffer");
-
-    s_touch_init_result = touch_test_init(s_display);
-    if (s_touch_init_result != ESP_OK) {
-        ESP_LOGE(TAG, "Touch initialization failed: %s; continuing display test",
-                 esp_err_to_name(s_touch_init_result));
-    }
+    ESP_LOGI(TAG, "LVGL 显示器注册完成：RGB565，320x40 DMA 缓冲区");
 
     configASSERT(lvgl_port_lock(0));
     lvgl_create_test_screen();
     lvgl_port_unlock();
-    ESP_LOGI(TAG, "LVGL test screen created");
+    ESP_LOGI(TAG, "LVGL 测试页面创建完成，开始初始化触摸");
+
+    touch_result = touch_test_init(s_display);
+
+    configASSERT(lvgl_port_lock(0));
+    lvgl_update_touch_state(touch_result == ESP_OK ? TOUCH_STATE_READY : TOUCH_STATE_FAILED);
+    lvgl_port_unlock();
+
+    if (touch_result != ESP_OK) {
+        ESP_LOGE(TAG, "触摸初始化失败：%s；显示测试继续运行", esp_err_to_name(touch_result));
+    } else {
+        ESP_LOGI(TAG, "触摸初始化完成，交互测试可以使用");
+    }
 }
 
 void lvgl_test_run(void)
