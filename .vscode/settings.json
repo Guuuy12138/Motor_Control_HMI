@@ -13,5 +13,7 @@
     "--background-index",
     "--query-driver=**",
     "--compile-commands-dir=c:\\EIE\\_Project\\esp\\Motor_Control_HMI\\build"
-  ]
+  ],
+  "idf.flashType": "UART",
+  "idf.portWin": "COM11"
 }
