@@ -22,6 +22,7 @@
 #define TOUCH_TEST_GPIO_SCL      GPIO_NUM_9
 #define TOUCH_TEST_GPIO_SDA      GPIO_NUM_10
 #define TOUCH_TEST_GPIO_RST      GPIO_NUM_11
+#define TOUCH_TEST_GPIO_INT      GPIO_NUM_12
 #define TOUCH_TEST_H_RES         320
 #define TOUCH_TEST_V_RES         480
 #define TOUCH_TEST_RESET_HIGH_MS 20
@@ -138,7 +139,7 @@ esp_err_t touch_test_init(lv_display_t *display)
         .y_max = TOUCH_TEST_V_RES,
         /* 已按厂商要求完成 500 ms 复位等待，禁止组件再次执行短复位。 */
         .rst_gpio_num = GPIO_NUM_NC,
-        .int_gpio_num = GPIO_NUM_NC,
+        .int_gpio_num = TOUCH_TEST_GPIO_INT,
         .levels = {
             .reset = 0,
             .interrupt = 0,
@@ -199,7 +200,8 @@ esp_err_t touch_test_init(lv_display_t *display)
         ESP_LOGE(TAG, "LVGL 触摸输入设备注册失败：内存不足");
         goto cleanup;
     }
-    ESP_LOGI(TAG, "LVGL 触摸输入设备注册完成，当前使用轮询模式");
+    ESP_LOGI(TAG, "LVGL 触摸输入设备注册完成，GPIO%d 低电平触摸中断已启用",
+             TOUCH_TEST_GPIO_INT);
 
     return ESP_OK;
 
