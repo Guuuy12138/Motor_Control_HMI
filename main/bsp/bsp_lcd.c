@@ -5,6 +5,7 @@
 
 #include <stdint.h>
 
+#include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
@@ -17,6 +18,7 @@
 static const char *TAG = "BSP_LCD";
 
 static bool s_spi_bus_initialized;
+static bool s_aux_gpio_initialized;
 static esp_lcd_panel_io_handle_t s_io_handle;
 static esp_lcd_panel_handle_t s_panel_handle;
 
@@ -42,10 +44,89 @@ static const st7796_lcd_init_cmd_t s_msp3526_init_cmds[] = {
     {0x21, NULL, 0, 120},
 };
 
+/* 配置背光和 SD 卡片选；SD 驱动接入前始终保持 SD_CS 为高电平。 */
+static esp_err_t bsp_lcd_init_aux_gpio(void)
+{
+    const gpio_config_t aux_gpio_config = {
+        .pin_bit_mask = (1ULL << BSP_LCD_GPIO_BACKLIGHT) | (1ULL << BSP_SD_GPIO_CS),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    esp_err_t result;
+
+    /* 先写入输出锁存值，再启用输出模式，避免 GPIO 切换方向时出现错误电平。 */
+    result = gpio_set_level(BSP_SD_GPIO_CS, 1);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "预设 SD_CS 高电平失败：%s", esp_err_to_name(result));
+        return result;
+    }
+
+    result = gpio_set_level(BSP_LCD_GPIO_BACKLIGHT, BSP_LCD_BACKLIGHT_OFF_LEVEL);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "预设背光关闭电平失败：%s", esp_err_to_name(result));
+        return result;
+    }
+
+    result = gpio_config(&aux_gpio_config);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "背光和 SD_CS GPIO 配置失败：%s", esp_err_to_name(result));
+        return result;
+    }
+
+    result = gpio_set_level(BSP_SD_GPIO_CS, 1);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "SD_CS 设置为未选中失败：%s", esp_err_to_name(result));
+        return result;
+    }
+
+    result = gpio_set_level(BSP_LCD_GPIO_BACKLIGHT, BSP_LCD_BACKLIGHT_OFF_LEVEL);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "初始化期间关闭背光失败：%s", esp_err_to_name(result));
+        return result;
+    }
+
+    s_aux_gpio_initialized = true;
+    ESP_LOGI(TAG, "辅助 GPIO 初始化完成：SD_CS=GPIO%d（高电平），LED=GPIO%d（暂时关闭）",
+             BSP_SD_GPIO_CS, BSP_LCD_GPIO_BACKLIGHT);
+    return ESP_OK;
+}
+
+esp_err_t bsp_lcd_set_backlight(bool on)
+{
+    const int level = on ? BSP_LCD_BACKLIGHT_ON_LEVEL : BSP_LCD_BACKLIGHT_OFF_LEVEL;
+    esp_err_t result;
+
+    if (!s_aux_gpio_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    result = gpio_set_level(BSP_LCD_GPIO_BACKLIGHT, level);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "背光%s失败：%s", on ? "打开" : "关闭", esp_err_to_name(result));
+        return result;
+    }
+
+    ESP_LOGI(TAG, "背光已%s", on ? "打开" : "关闭");
+    return ESP_OK;
+}
+
 /* 初始化失败时按依赖关系逆序释放已经创建的硬件资源。 */
 static void bsp_lcd_cleanup(void)
 {
     esp_err_t result;
+
+    if (s_aux_gpio_initialized) {
+        result = bsp_lcd_set_backlight(false);
+        if (result != ESP_OK) {
+            ESP_LOGW(TAG, "清理时关闭背光失败：%s", esp_err_to_name(result));
+        }
+        result = gpio_set_level(BSP_SD_GPIO_CS, 1);
+        if (result != ESP_OK) {
+            ESP_LOGW(TAG, "清理时保持 SD_CS 高电平失败：%s", esp_err_to_name(result));
+        }
+    }
 
     if (s_panel_handle != NULL) {
         result = esp_lcd_panel_del(s_panel_handle);
@@ -79,7 +160,7 @@ esp_err_t bsp_lcd_init(esp_lcd_panel_io_handle_t *out_io,
     const spi_bus_config_t bus_config = {
         .sclk_io_num = BSP_LCD_GPIO_SCLK,
         .mosi_io_num = BSP_LCD_GPIO_MOSI,
-        .miso_io_num = GPIO_NUM_NC,
+        .miso_io_num = BSP_LCD_GPIO_MISO,
         .quadwp_io_num = GPIO_NUM_NC,
         .quadhd_io_num = GPIO_NUM_NC,
         .max_transfer_sz = BSP_LCD_H_RES * BSP_LCD_DRAW_BUFFER_LINES * sizeof(uint16_t),
@@ -121,9 +202,14 @@ esp_err_t bsp_lcd_init(esp_lcd_panel_io_handle_t *out_io,
         bsp_lcd_cleanup();
     }
 
-    ESP_LOGI(TAG, "正在初始化 LCD：CS=%d RST=%d DC=%d MOSI=%d SCLK=%d",
+    result = bsp_lcd_init_aux_gpio();
+    if (result != ESP_OK) {
+        return result;
+    }
+
+    ESP_LOGI(TAG, "正在初始化 LCD：CS=%d RST=%d DC=%d MOSI=%d MISO=%d SCLK=%d",
              BSP_LCD_GPIO_CS, BSP_LCD_GPIO_RST, BSP_LCD_GPIO_DC,
-             BSP_LCD_GPIO_MOSI, BSP_LCD_GPIO_SCLK);
+             BSP_LCD_GPIO_MOSI, BSP_LCD_GPIO_MISO, BSP_LCD_GPIO_SCLK);
 
     result = spi_bus_initialize(BSP_LCD_SPI_HOST, &bus_config, SPI_DMA_CH_AUTO);
     if (result != ESP_OK) {
@@ -174,6 +260,11 @@ esp_err_t bsp_lcd_init(esp_lcd_panel_io_handle_t *out_io,
         goto cleanup;
     }
 
+    result = bsp_lcd_set_backlight(true);
+    if (result != ESP_OK) {
+        goto cleanup;
+    }
+
     *out_io = s_io_handle;
     *out_panel = s_panel_handle;
     ESP_LOGI(TAG, "LCD 初始化完成：%dx%d，SPI %d MHz，RGB565/BGR",
@@ -184,4 +275,3 @@ cleanup:
     bsp_lcd_cleanup();
     return result;
 }
-

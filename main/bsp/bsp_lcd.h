@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <stdbool.h>
+
 #include "esp_err.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
@@ -27,7 +29,17 @@ extern "C" {
 esp_err_t bsp_lcd_init(esp_lcd_panel_io_handle_t *out_io,
                        esp_lcd_panel_handle_t *out_panel);
 
+/**
+ * @brief 打开或关闭 LCD 背光。
+ *
+ * GPIO9 在 bsp_lcd_init() 中完成配置。在此之前调用会返回
+ * ESP_ERR_INVALID_STATE；重复设置相同状态不会产生额外影响。
+ *
+ * @param on true 打开背光，false 关闭背光。
+ * @return ESP_OK 设置成功；其他值表示 GPIO 尚未初始化或设置失败。
+ */
+esp_err_t bsp_lcd_set_backlight(bool on);
+
 #ifdef __cplusplus
 }
 #endif
-

@@ -115,6 +115,12 @@ void lcd_test_run(void)
 
     ESP_ERROR_CHECK(bsp_lcd_init(&io_handle, &panel_handle));
 
+    ESP_LOGI(TAG, "开始背光开关测试：关闭 500 ms 后重新打开");
+    ESP_ERROR_CHECK(bsp_lcd_set_backlight(false));
+    vTaskDelay(pdMS_TO_TICKS(500));
+    ESP_ERROR_CHECK(bsp_lcd_set_backlight(true));
+    ESP_LOGI(TAG, "背光开关测试完成");
+
     s_transfer_done = xSemaphoreCreateBinary();
     configASSERT(s_transfer_done != NULL);
     ESP_ERROR_CHECK(esp_lcd_panel_io_register_event_callbacks(io_handle, &io_callbacks, NULL));
