@@ -1,10 +1,13 @@
 idf_component_register(
     SRCS
         "main.c"
+        "bsp/bsp_lcd.c"
+        "bsp/bsp_touch.c"
         "test/lcd_test.c"
         "test/lvgl_test.c"
         "test/touch_test.c"
     INCLUDE_DIRS
         "."
+        "bsp"
         "test"
 )
