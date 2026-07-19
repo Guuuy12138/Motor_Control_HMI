@@ -17,6 +17,7 @@
 
 #include "touch_test.h"
 
+/* ===== 硬件配置 ===== */
 #define TOUCH_TEST_I2C_PORT      I2C_NUM_0
 #define TOUCH_TEST_I2C_CLOCK_HZ  (100 * 1000)
 #define TOUCH_TEST_GPIO_SCL      GPIO_NUM_9
@@ -34,6 +35,10 @@
 
 static const char *TAG = "TOUCH_TEST";
 
+/*
+ * 按 FT6336U 数据手册要求的时序复位触摸芯片：
+ * RST 高 20 ms → 低 20 ms → 高，然后等 500 ms 等待芯片内部初始化完成。
+ */
 static esp_err_t touch_test_reset_with_vendor_timing(void)
 {
     const gpio_config_t reset_gpio_config = {
@@ -57,6 +62,10 @@ static esp_err_t touch_test_reset_with_vendor_timing(void)
     return ESP_OK;
 }
 
+/*
+ * 在 I2C 总线上探测 FT6336U（地址 0x38），最多重试 3 次。
+ * 每次失败后复位 I2C 总线并重新硬件复位触摸芯片，再试下一次。
+ */
 static esp_err_t touch_test_probe_device(i2c_master_bus_handle_t i2c_bus)
 {
     esp_err_t result = ESP_FAIL;
@@ -92,6 +101,7 @@ static esp_err_t touch_test_probe_device(i2c_master_bus_handle_t i2c_bus)
     return result;
 }
 
+/* 按依赖顺序逆序释放：先释放触摸驱动 → IO → I2C 总线，失败只记警告不中断。 */
 static void touch_test_cleanup(i2c_master_bus_handle_t i2c_bus,
                                esp_lcd_panel_io_handle_t touch_io,
                                esp_lcd_touch_handle_t touch_handle)
@@ -118,6 +128,10 @@ static void touch_test_cleanup(i2c_master_bus_handle_t i2c_bus,
     }
 }
 
+/*
+ * 触摸测试入口：初始化 I2C 总线 → 硬件复位 FT6336U → 探测芯片 → 注册为 LVGL 触摸输入设备。
+ * 成功返回 ESP_OK，失败返回错误码（调用方自行决定是否继续运行 UI）。
+ */
 esp_err_t touch_test_init(lv_display_t *display)
 {
     esp_err_t result;
@@ -153,6 +167,7 @@ esp_err_t touch_test_init(lv_display_t *display)
 
     ESP_RETURN_ON_FALSE(display != NULL, ESP_ERR_INVALID_ARG, TAG, "LVGL 显示器句柄为空");
 
+    /* ---- 1. 初始化 I2C 总线 ---- */
     result = i2c_new_master_bus(&i2c_config, &i2c_bus);
     if (result != ESP_OK) {
         ESP_LOGE(TAG, "I2C 总线初始化失败：%s", esp_err_to_name(result));
@@ -161,18 +176,21 @@ esp_err_t touch_test_init(lv_display_t *display)
     ESP_LOGI(TAG, "I2C 总线初始化完成：SCL=%d SDA=%d，%d kHz，内部上拉已启用",
              TOUCH_TEST_GPIO_SCL, TOUCH_TEST_GPIO_SDA, TOUCH_TEST_I2C_CLOCK_HZ / 1000);
 
+    /* ---- 2. 硬件复位 ---- */
     result = touch_test_reset_with_vendor_timing();
     if (result != ESP_OK) {
         ESP_LOGE(TAG, "FT6336U 硬件复位失败：%s", esp_err_to_name(result));
         goto cleanup;
     }
 
+    /* ---- 3. 探测 I2C 芯片 ---- */
     result = touch_test_probe_device(i2c_bus);
     if (result != ESP_OK) {
         ESP_LOGE(TAG, "FT6336U 地址探测最终失败：%s", esp_err_to_name(result));
         goto cleanup;
     }
 
+    /* ---- 4. 创建触摸 I2C 通信对象 ---- */
     esp_lcd_panel_io_i2c_config_t touch_io_config = ESP_LCD_TOUCH_IO_I2C_FT6x36_CONFIG();
     touch_io_config.scl_speed_hz = TOUCH_TEST_I2C_CLOCK_HZ;
     ESP_LOGI(TAG, "正在创建触摸 I2C 通信对象");
@@ -183,6 +201,7 @@ esp_err_t touch_test_init(lv_display_t *display)
     }
     ESP_LOGI(TAG, "触摸 I2C 通信对象创建完成");
 
+    /* ---- 5. 初始化 FT6336U 驱动 ---- */
     ESP_LOGI(TAG, "正在初始化 FT6336U 驱动并读取芯片信息");
     result = esp_lcd_touch_new_i2c_ft6x36(touch_io, &touch_config, &touch_handle);
     if (result != ESP_OK) {
@@ -191,6 +210,7 @@ esp_err_t touch_test_init(lv_display_t *display)
     }
     ESP_LOGI(TAG, "FT6336U 初始化完成，I2C 地址为 0x%02X", TOUCH_TEST_I2C_ADDRESS);
 
+    /* ---- 6. 注册为 LVGL 触摸输入设备 ---- */
     ESP_LOGI(TAG, "正在注册 LVGL 触摸输入设备");
     if (lvgl_port_add_touch(&(lvgl_port_touch_cfg_t) {
         .disp = display,
@@ -205,6 +225,7 @@ esp_err_t touch_test_init(lv_display_t *display)
 
     return ESP_OK;
 
+/* 任何步骤失败都跳转此处，逆序释放已申请的资源 */
 cleanup:
     touch_test_cleanup(i2c_bus, touch_io, touch_handle);
     return result;

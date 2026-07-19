@@ -20,6 +20,7 @@
 #include "lvgl_test.h"
 #include "touch_test.h"
 
+/* ===== 硬件配置 ===== */
 #define LVGL_TEST_H_RES             320
 #define LVGL_TEST_V_RES             480
 #define LVGL_TEST_DRAW_BUFFER_LINES 40
@@ -35,6 +36,7 @@
 static const char *TAG = "LVGL_TEST";
 static lv_display_t *s_display;
 
+/* ===== 触摸状态机：INIT → 初始化结果 → READY 或 FAILED ===== */
 typedef enum {
     TOUCH_STATE_INIT,
     TOUCH_STATE_READY,
@@ -45,6 +47,7 @@ typedef struct {
     const char *name;
 } touch_region_t;
 
+/* 四个触摸按钮区域：左上 / 右上 / 左下 / 右下 */
 static const touch_region_t s_touch_regions[] = {
     {.name = "TL"},
     {.name = "TR"},
@@ -52,6 +55,7 @@ static const touch_region_t s_touch_regions[] = {
     {.name = "BR"},
 };
 
+/* ===== UI 全局组件引用（事件回调中更新） ===== */
 static lv_obj_t *s_touch_name_label;
 static lv_obj_t *s_touch_position_label;
 static lv_obj_t *s_touch_count_label;
@@ -79,6 +83,9 @@ static const st7796_lcd_init_cmd_t s_msp3526_init_cmds[] = {
 static esp_lcd_panel_io_handle_t s_io_handle;
 static esp_lcd_panel_handle_t s_panel_handle;
 
+/* ===== UI 辅助组件 ===== */
+
+/* 创建一个小色块，放在标题下方作为 RGB 颜色指示条。 */
 static void lvgl_add_color_block(lv_obj_t *parent, int32_t x, lv_color_t color)
 {
     lv_obj_t *block = lv_obj_create(parent);
@@ -92,6 +99,7 @@ static void lvgl_add_color_block(lv_obj_t *parent, int32_t x, lv_color_t color)
     lv_obj_clear_flag(block, LV_OBJ_FLAG_SCROLLABLE);
 }
 
+/* 根据触摸初始化结果切换状态卡片的颜色和文字。 */
 static void lvgl_update_touch_state(touch_state_t state)
 {
     switch (state) {
@@ -125,6 +133,7 @@ static void lvgl_update_touch_state(touch_state_t state)
     }
 }
 
+/* 触摸按钮点击回调：读取触摸坐标、翻转 Y 轴、更新状态卡片并打印日志。 */
 static void lvgl_touch_button_event_cb(lv_event_t *event)
 {
     const touch_region_t *region = lv_event_get_user_data(event);
@@ -146,6 +155,7 @@ static void lvgl_touch_button_event_cb(lv_event_t *event)
              (unsigned long)s_touch_count);
 }
 
+/* 在指定位置创建一个测试按钮，点击时触发触摸事件回调。 */
 static void lvgl_add_touch_button(lv_obj_t *parent, int32_t x, int32_t y, const touch_region_t *region)
 {
     lv_obj_t *button = lv_button_create(parent);
@@ -167,6 +177,7 @@ static void lvgl_add_touch_button(lv_obj_t *parent, int32_t x, int32_t y, const 
     lv_obj_center(label);
 }
 
+/* LVGL 定时器回调：每秒更新一次运行时间显示。 */
 static void lvgl_uptime_timer_cb(lv_timer_t *timer)
 {
     static uint32_t uptime_seconds;
@@ -176,6 +187,11 @@ static void lvgl_uptime_timer_cb(lv_timer_t *timer)
     lv_label_set_text_fmt(uptime_label, "Uptime: %lu s", (unsigned long)uptime_seconds);
 }
 
+/*
+ * 构建测试页面布局（从上到下）：
+ *   标题 TOUCH TEST → 四色小色块 → 运行信息 → 四个触摸按钮（2×2 网格）
+ *   → 触摸状态卡片（底部） → 运行时长
+ */
 static void lvgl_create_test_screen(void)
 {
     lv_obj_t *screen = lv_screen_active();
@@ -183,6 +199,7 @@ static void lvgl_create_test_screen(void)
     lv_obj_t *info;
     lv_obj_t *uptime_label;
 
+    /* ---- 深色背景 ---- */
     lv_obj_set_style_bg_color(screen, lv_color_hex(0x101820), 0);
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
 
@@ -192,6 +209,7 @@ static void lvgl_create_test_screen(void)
     lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
 
+    /* ---- RGB 颜色指示条 ---- */
     lvgl_add_color_block(screen, 31, lv_color_hex(0xF00000));
     lvgl_add_color_block(screen, 99, lv_color_hex(0x00D000));
     lvgl_add_color_block(screen, 167, lv_color_hex(0x0060FF));
@@ -203,6 +221,7 @@ static void lvgl_create_test_screen(void)
     lv_obj_set_style_text_align(info, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(info, LV_ALIGN_TOP_MID, 0, 102);
 
+    /* ---- 触摸状态卡片（底部）---- */
     s_touch_status_card = lv_obj_create(screen);
     lv_obj_set_size(s_touch_status_card, 280, 84);
     lv_obj_set_pos(s_touch_status_card, 20, 346);
@@ -227,6 +246,7 @@ static void lvgl_create_test_screen(void)
 
     lvgl_update_touch_state(TOUCH_STATE_INIT);
 
+    /* ---- 2×2 触摸测试按钮 ---- */
     lvgl_add_touch_button(screen, 20, 150, &s_touch_regions[0]);
     lvgl_add_touch_button(screen, 175, 150, &s_touch_regions[1]);
     lvgl_add_touch_button(screen, 20, 246, &s_touch_regions[2]);
@@ -236,9 +256,11 @@ static void lvgl_create_test_screen(void)
     lv_label_set_text(uptime_label, "Uptime: 0 s");
     lv_obj_set_style_text_color(uptime_label, lv_color_hex(0xB8C7D9), 0);
     lv_obj_align(uptime_label, LV_ALIGN_BOTTOM_MID, 0, -22);
+    /* 1 秒定时器持续刷新运行时长 */
     lv_timer_create(lvgl_uptime_timer_cb, 1000, uptime_label);
 }
 
+/* SPI 总线 → Panel IO → ST7796 驱动 → 复位 → 初始化 → 点亮，与 lcd_test.c 相同流程但供 LVGL 使用。 */
 static void lvgl_init_lcd(void)
 {
     const spi_bus_config_t bus_config = {
@@ -307,6 +329,7 @@ static void lvgl_init_port(void)
         },
     };
 
+    /* ---- 1. 初始化 LVGL 端口 & 注册显示器 ---- */
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_config));
     ESP_LOGI(TAG, "LVGL 端口初始化完成");
 
@@ -314,11 +337,13 @@ static void lvgl_init_port(void)
     ESP_ERROR_CHECK(s_display == NULL ? ESP_FAIL : ESP_OK);
     ESP_LOGI(TAG, "LVGL 显示器注册完成：RGB565，320x40 DMA 缓冲区");
 
+    /* ---- 2. 创建测试 UI ---- */
     configASSERT(lvgl_port_lock(0));
     lvgl_create_test_screen();
     lvgl_port_unlock();
     ESP_LOGI(TAG, "LVGL 测试页面创建完成，开始初始化触摸");
 
+    /* ---- 3. 初始化触摸 & 更新状态 ---- */
     touch_result = touch_test_init(s_display);
 
     configASSERT(lvgl_port_lock(0));
@@ -332,8 +357,12 @@ static void lvgl_init_port(void)
     }
 }
 
+/*
+ * LVGL 综合测试入口：初始化 ST7796 屏幕 → 初始化 LVGL 并创建测试页面（色块 + 触摸区域 + 状态卡）
+ * → 初始化 FT6336U 触摸驱动并注册到 LVGL。触摸失败不影响显示，UI 仍可查看。
+ */
 void lvgl_test_run(void)
 {
-    lvgl_init_lcd();
-    lvgl_init_port();
+    lvgl_init_lcd();    /* 初始化 SPI + ST7796 面板 */
+    lvgl_init_port();   /* 初始化 LVGL 端口、创建 UI、注册触摸 */
 }
